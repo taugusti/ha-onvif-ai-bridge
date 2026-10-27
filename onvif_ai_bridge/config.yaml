@@ -1,0 +1,42 @@
+name: ONVIF AI Bridge
+version: "0.1.0"
+slug: onvif_ai_bridge
+description: Turns camera AI detections (e.g. Milesight human/vehicle) into plain ONVIF motion events for NVRs such as Ajax
+url: https://github.com/taugusti/ha-onvif-ai-bridge
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+hassio_api: true
+ports:
+  8201/tcp: 8201
+  8202/tcp: 8202
+  8203/tcp: 8203
+  8204/tcp: 8204
+  8205/tcp: 8205
+  8206/tcp: 8206
+  8207/tcp: 8207
+  8208/tcp: 8208
+ports_description:
+  8201/tcp: Bridged camera 1 (ONVIF)
+  8202/tcp: Bridged camera 2 (ONVIF)
+  8203/tcp: Bridged camera 3 (ONVIF)
+  8204/tcp: Bridged camera 4 (ONVIF)
+  8205/tcp: Bridged camera 5 (ONVIF)
+  8206/tcp: Bridged camera 6 (ONVIF)
+  8207/tcp: Bridged camera 7 (ONVIF)
+  8208/tcp: Bridged camera 8 (ONVIF)
+options:
+  advertise_host: ""
+  log_level: info
+  cameras: []
+schema:
+  advertise_host: str?
+  log_level: list(debug|info|warning)
+  cameras:
+    - name: str
+      host: str
+      port: port?
+      listen_port: int(8201,8208)
+      suppress_basic_motion: bool?
