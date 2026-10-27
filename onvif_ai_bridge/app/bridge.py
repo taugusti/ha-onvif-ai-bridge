@@ -232,15 +232,26 @@ def is_xml(body_bytes, content_type):
     return head.startswith(b"<?xml") or b"Envelope" in head
 
 
-def forward(host, port, method, path, headers, body, timeout=130):
-    conn = http.client.HTTPConnection(host, port, timeout=timeout)
-    try:
-        conn.request(method, path, body=body, headers=headers)
-        resp = conn.getresponse()
-        data = resp.read()
-        return resp.status, resp.reason, resp.getheaders(), data
-    finally:
-        conn.close()
+RETRYABLE = (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError,
+             http.client.BadStatusLine)
+
+
+def forward(host, port, method, path, headers, body, timeout=130, retries=1):
+    """Forward one request; retry once if the camera drops the connection without a reply."""
+    for attempt in range(retries + 1):
+        conn = http.client.HTTPConnection(host, port, timeout=timeout)
+        try:
+            conn.request(method, path, body=body, headers=headers)
+            resp = conn.getresponse()
+            data = resp.read()
+            return resp.status, resp.reason, resp.getheaders(), data
+        except RETRYABLE as exc:
+            if attempt >= retries:
+                raise
+            LOG.debug("%s:%d %s %s dropped (%s), retrying", host, port, method, path, exc)
+            time.sleep(0.2)
+        finally:
+            conn.close()
 
 
 def make_handler(cam):

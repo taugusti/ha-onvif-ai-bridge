@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.2.1
+- Retry a camera request once when the camera closes the connection without a reply (seen on Milesight during 1 s PullMessages polling from Ajax); prevents the NVR from dropping its event subscription.
+
 ## 0.2.0
 - RTSP relay: stream URLs now point at the bridge (port listen_port+1000, e.g. 9201) and are relayed to the camera. Needed for NVRs such as Ajax that open the stream on the IP the camera was added with.
 
