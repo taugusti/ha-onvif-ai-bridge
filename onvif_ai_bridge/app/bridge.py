@@ -78,6 +78,8 @@ class Camera:
         self.source_topics = set(cfg.get("source_topics") or DEFAULT_SOURCE_TOPICS)
         self.suppress_basic = bool(cfg.get("suppress_basic_motion", True))
         self.advertise_host = advertise_host
+        self.trace = bool(cfg.get("trace", False))
+        self.trace_chars = int(cfg.get("trace_chars", 3000))
         self.rules = {}          # rule name -> bool
         self.lock = threading.Lock()
         self.push_targets = {}   # token -> original consumer URL
@@ -194,6 +196,21 @@ class Camera:
         return CONSUMER_RE.sub(repl, body, count=1)
 
 
+BODY_OP_RE = re.compile(r"<(?:[\w.-]+:)?Body\b[^>]*>\s*<(?:[\w.-]+:)?([\w-]+)", re.S)
+NS_DECL_RE = re.compile(r'\s+xmlns(?::[\w.-]+)?="[^"]*"')
+
+
+def soap_op(text):
+    m = BODY_OP_RE.search(text or "")
+    return m.group(1) if m else "?"
+
+
+def compact(text):
+    """Shorten a SOAP document for logging: drop namespace declarations and whitespace."""
+    text = NS_DECL_RE.sub("", text)
+    return re.sub(r">\s+<", "><", text).strip()
+
+
 def is_xml(body_bytes, content_type):
     ct = (content_type or "").lower()
     if "xml" in ct or "soap" in ct:
@@ -218,8 +235,8 @@ def make_handler(cam):
         protocol_version = "HTTP/1.1"
         server_version = "onvif-ai-bridge"
 
-        def log_message(self, fmt, *args):  # route to logging
-            LOG.debug("%s: %s %s", cam.name, self.address_string(), fmt % args)
+        def log_message(self, fmt, *args):  # access log is replaced by the SOAP-aware log line
+            pass
 
         def _read_body(self):
             length = int(self.headers.get("Content-Length") or 0)
@@ -265,11 +282,20 @@ def make_handler(cam):
                                   f"camera unreachable: {exc}".encode())
 
             ctype = dict((k.lower(), v) for k, v in rheaders).get("content-type")
+            text = None
             if data and is_xml(data, ctype):
                 text = data.decode("utf-8", "replace")
                 text = cam.rewrite_urls(text)
                 text = cam.translate_events(text)
                 data = text.encode("utf-8")
+            if LOG.isEnabledFor(logging.DEBUG):
+                req_op = soap_op(text_req) if text_req else "-"
+                resp_op = soap_op(text) if text else "-"
+                LOG.debug("%s: %s %s [%s] -> %s [%s]", cam.name, self.command, self.path,
+                          req_op, status, resp_op)
+                if text and (cam.trace or "Fault" in resp_op):
+                    LOG.debug("%s: response body %s: %s", cam.name, req_op,
+                              compact(text)[:cam.trace_chars])
             self._send(status, reason, rheaders, data)
 
         def _push_in(self, body):
