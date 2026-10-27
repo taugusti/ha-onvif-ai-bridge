@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+import socket
 import sys
 import threading
 import time
@@ -80,6 +81,11 @@ class Camera:
         self.advertise_host = advertise_host
         self.trace = bool(cfg.get("trace", False))
         self.trace_chars = int(cfg.get("trace_chars", 3000))
+        # RTSP relay: NVRs such as Ajax open the stream on the IP the camera was
+        # added with, so video must be reachable on the bridge as well.
+        self.rtsp_port = int(cfg.get("rtsp_port", 554))
+        self.rtsp_listen_port = int(cfg.get("rtsp_listen_port") or (self.listen_port + 1000))
+        self.relay_rtsp = bool(cfg.get("relay_rtsp", True))
         self.rules = {}          # rule name -> bool
         self.lock = threading.Lock()
         self.push_targets = {}   # token -> original consumer URL
@@ -99,7 +105,14 @@ class Camera:
             pattern = rf"http://{cam}(?::80)?(?=[/<\"'\s])"
         else:
             pattern = rf"http://{cam}:{self.port}(?=[/<\"'\s])"
-        return re.sub(pattern, base, text)
+        text = re.sub(pattern, base, text)
+        if self.relay_rtsp:
+            if self.rtsp_port == 554:
+                rpat = rf"rtsp://{cam}(?::554)?(?=[/<\"'\s])"
+            else:
+                rpat = rf"rtsp://{cam}:{self.rtsp_port}(?=[/<\"'\s])"
+            text = re.sub(rpat, f"rtsp://{self.advertise_host}:{self.rtsp_listen_port}", text)
+        return text
 
     # ---- event rewriting ----------------------------------------------
     def aggregate(self):
@@ -328,6 +341,54 @@ def make_handler(cam):
     return Handler
 
 
+def _pipe(src, dst):
+    try:
+        while True:
+            chunk = src.recv(65536)
+            if not chunk:
+                break
+            dst.sendall(chunk)
+    except OSError:
+        pass
+    finally:
+        for s in (src, dst):
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
+def start_tcp_relay(cam):
+    """Plain TCP relay bridge:rtsp_listen_port -> camera:rtsp_port (RTSP incl. interleaved RTP)."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("0.0.0.0", cam.rtsp_listen_port))
+    srv.listen(16)
+
+    def accept_loop():
+        while True:
+            try:
+                client, addr = srv.accept()
+            except OSError:
+                return
+            try:
+                upstream = socket.create_connection((cam.host, cam.rtsp_port), timeout=10)
+                upstream.settimeout(None)
+            except OSError as exc:
+                LOG.warning("%s: RTSP relay cannot reach camera %s:%d: %s",
+                            cam.name, cam.host, cam.rtsp_port, exc)
+                client.close()
+                continue
+            cam.stats["rtsp_sessions"] = cam.stats.get("rtsp_sessions", 0) + 1
+            LOG.info("%s: RTSP session from %s relayed to %s:%d", cam.name, addr[0],
+                     cam.host, cam.rtsp_port)
+            for a, b in ((client, upstream), (upstream, client)):
+                threading.Thread(target=_pipe, args=(a, b), daemon=True).start()
+
+    threading.Thread(target=accept_loop, name=f"{cam.name}-rtsp", daemon=True).start()
+    return srv
+
+
 def load_config(path):
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
@@ -364,6 +425,10 @@ def serve(config):
         t = threading.Thread(target=srv.serve_forever, name=cam.name, daemon=True)
         t.start()
         servers.append((cam, srv))
+        if cam.relay_rtsp:
+            start_tcp_relay(cam)
+            LOG.info("Bridge '%s': RTSP rtsp://%s:%d -> %s:%d", cam.name, advertise,
+                     cam.rtsp_listen_port, cam.host, cam.rtsp_port)
         LOG.info("Bridge '%s': http://%s:%d -> camera %s:%d (AI topics: %s, suppress basic motion: %s)",
                  cam.name, advertise, cam.listen_port, cam.host, cam.port,
                  ", ".join(sorted(cam.source_topics)), cam.suppress_basic)

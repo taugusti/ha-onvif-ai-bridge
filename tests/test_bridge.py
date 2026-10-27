@@ -1,4 +1,5 @@
 import http.client
+import socket
 import os
 import sys
 import threading
@@ -121,20 +122,50 @@ class BridgeTest(unittest.TestCase):
         # find a free port for the bridge
         import socket
         s = socket.socket(); s.bind(("127.0.0.1", 0)); cls.bport = s.getsockname()[1]; s.close()
+        s = socket.socket(); s.bind(("127.0.0.1", 0)); cls.rport = s.getsockname()[1]; s.close()
+        # fake "camera RTSP" server: echoes what it receives, prefixed
+        cls.rtsp_srv = socket.socket(); cls.rtsp_srv.bind(("127.0.0.1", 0)); cls.rtsp_srv.listen(4)
+        cls.cam_rtsp_port = cls.rtsp_srv.getsockname()[1]
+
+        def rtsp_echo():
+            while True:
+                c, _ = cls.rtsp_srv.accept()
+                data = c.recv(4096)
+                c.sendall(b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nX-Echo: " + data.split(b"\r\n")[0] + b"\r\n\r\n")
+                c.close()
+        threading.Thread(target=rtsp_echo, daemon=True).start()
         cfg = {"advertise_host": "10.99.98.216",
                "cameras": [{"name": "Indkørsel AI", "host": "127.0.0.1", "port": cls.cam.port,
-                            "listen_port": cls.bport}]}
+                            "listen_port": cls.bport, "rtsp_port": cls.cam_rtsp_port,
+                            "rtsp_listen_port": cls.rport}]}
         cls.servers = bridge.serve(cfg)
         cls.bcam = cls.servers[0][0]
         time.sleep(0.2)
 
-    def test_urls_rewritten_but_rtsp_untouched(self):
+    def test_urls_and_rtsp_rewritten(self):
         st, body = post(self.bport, "/onvif/device_service", envelope("<tds:GetCapabilities/>"))
         self.assertEqual(st, 200)
         # fake camera is not on port 80, so only host:port form is rewritten
         self.assertIn(f"http://10.99.98.216:{self.bport}/onvif/Events", body)
         st, body = post(self.bport, "/onvif/Media", envelope("<trt:GetStreamUri/>"))
+        # fake camera advertises :554 but its RTSP port in this test is cam_rtsp_port -> untouched
         self.assertIn("rtsp://127.0.0.1:554/main", body)
+        cam = bridge.Camera({"host": "127.0.0.1", "listen_port": 8201}, "10.99.98.216")
+        self.assertEqual(cam.rewrite_urls("<u>rtsp://127.0.0.1:554/main</u>"),
+                         "<u>rtsp://10.99.98.216:9201/main</u>")
+
+    def test_rtsp_relay(self):
+        c = socket.create_connection(("127.0.0.1", self.rport), timeout=5)
+        c.sendall(b"OPTIONS rtsp://10.99.98.216:9201/main RTSP/1.0\r\nCSeq: 1\r\n\r\n")
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = c.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        c.close()
+        self.assertIn(b"RTSP/1.0 200 OK", data)
+        self.assertIn(b"X-Echo: OPTIONS rtsp://10.99.98.216:9201/main RTSP/1.0", data)
 
     def test_pullpoint_translation_and_suppression(self):
         st, body = post(self.bport, "/onvif/Events", envelope("<tev:CreatePullPointSubscription/>"))
@@ -200,7 +231,7 @@ class BridgeTest(unittest.TestCase):
         out = cam.rewrite_urls(s)
         self.assertIn("http://10.99.98.216:8125/onvif/Events", out)
         self.assertIn("http://10.99.98.216:8125/onvif/Media", out)
-        self.assertIn("rtsp://10.99.98.125:554/x", out)
+        self.assertIn("rtsp://10.99.98.216:9125/x", out)
         self.assertIn("http://10.99.98.1250/x", out)
 
 

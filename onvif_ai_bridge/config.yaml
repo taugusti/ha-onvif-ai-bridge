@@ -1,5 +1,5 @@
 name: ONVIF AI Bridge
-version: "0.1.1"
+version: "0.2.0"
 slug: onvif_ai_bridge
 description: Turns camera AI detections (e.g. Milesight human/vehicle) into plain ONVIF motion events for NVRs such as Ajax
 url: https://github.com/taugusti/ha-onvif-ai-bridge
@@ -18,6 +18,15 @@ ports:
   8206/tcp: 8206
   8207/tcp: 8207
   8208/tcp: 8208
+  9201/tcp: 9201
+  9202/tcp: 9202
+  9203/tcp: 9203
+  9204/tcp: 9204
+  9205/tcp: 9205
+  9206/tcp: 9206
+  9207/tcp: 9207
+  9208/tcp: 9208
+  554/tcp: null
 ports_description:
   8201/tcp: Bridged camera 1 (ONVIF)
   8202/tcp: Bridged camera 2 (ONVIF)
@@ -27,6 +36,15 @@ ports_description:
   8206/tcp: Bridged camera 6 (ONVIF)
   8207/tcp: Bridged camera 7 (ONVIF)
   8208/tcp: Bridged camera 8 (ONVIF)
+  9201/tcp: Bridged camera 1 (RTSP video relay)
+  9202/tcp: Bridged camera 2 (RTSP video relay)
+  9203/tcp: Bridged camera 3 (RTSP video relay)
+  9204/tcp: Bridged camera 4 (RTSP video relay)
+  9205/tcp: Bridged camera 5 (RTSP video relay)
+  9206/tcp: Bridged camera 6 (RTSP video relay)
+  9207/tcp: Bridged camera 7 (RTSP video relay)
+  9208/tcp: Bridged camera 8 (RTSP video relay)
+  554/tcp: Optional RTSP relay on the standard port (for NVRs that ignore the port in the stream URL)
 options:
   advertise_host: ""
   log_level: info
@@ -41,3 +59,6 @@ schema:
       listen_port: int(8201,8208)
       suppress_basic_motion: bool?
       trace: bool?
+      relay_rtsp: bool?
+      rtsp_port: port?
+      rtsp_listen_port: port?
