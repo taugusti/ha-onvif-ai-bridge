@@ -224,6 +224,24 @@ class BridgeTest(unittest.TestCase):
         c.getresponse().read()
         self.assertIn("Authorization", self.cam.requests[-1][1])
 
+    def test_multiple_source_topics_reolink_style(self):
+        cam = bridge.Camera({"host": "10.99.98.239", "listen_port": 8204, "port": 8000,
+                             "source_topics": "tns1:RuleEngine/MyRuleDetector/PeopleDetect, tns1:RuleEngine/MyRuleDetector/VehicleDetect"},
+                            "10.99.98.216")
+        people_on = notif("tns1:RuleEngine/MyRuleDetector/PeopleDetect", None, "State", "true")
+        car_on = notif("tns1:RuleEngine/MyRuleDetector/VehicleDetect", None, "State", "true")
+        people_off = notif("tns1:RuleEngine/MyRuleDetector/PeopleDetect", None, "State", "false")
+        car_off = notif("tns1:RuleEngine/MyRuleDetector/VehicleDetect", None, "State", "false")
+        pixel = notif("tns1:VideoSource/MotionAlarm", None, "State", "true")
+        out = cam.translate_events(envelope(pixel + people_on))
+        self.assertEqual(out.count("tns1:VideoSource/MotionAlarm"), 1)   # pixel dropped, AI translated
+        self.assertIn('Name="State" Value="true"', out)
+        cam.translate_events(envelope(car_on + people_off))
+        self.assertTrue(cam.aggregate())                                   # vehicle still active
+        out = cam.translate_events(envelope(car_off))
+        self.assertIn('Name="State" Value="false"', out)
+        self.assertIn("tns1:RuleEngine/MyRuleDetector/PeopleDetect", cam.topics_seen)
+
     def test_port80_url_forms(self):
         cam = bridge.Camera({"host": "10.99.98.125", "listen_port": 8125}, "10.99.98.216")
         s = ("<a>http://10.99.98.125:80/onvif/Events</a><b>http://10.99.98.125/onvif/Media</b>"

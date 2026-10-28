@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0
+- `source_topics` per camera (comma separated), e.g. Reolink `tns1:RuleEngine/MyRuleDetector/PeopleDetect, tns1:RuleEngine/MyRuleDetector/VehicleDetect`.
+- Topic discovery: every new event topic a camera sends is logged once and listed under `topics_seen` in `/__status`.
+- AI state is tracked per topic and rule, so person and vehicle detections can overlap.
+
 ## 0.2.1
 - Retry a camera request once when the camera closes the connection without a reply (seen on Milesight during 1 s PullMessages polling from Ajax); prevents the NVR from dropping its event subscription.
 

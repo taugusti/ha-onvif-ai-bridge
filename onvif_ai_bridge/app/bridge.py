@@ -76,7 +76,11 @@ class Camera:
         self.host = cfg["host"]
         self.port = int(cfg.get("port", 80))
         self.listen_port = int(cfg["listen_port"])
-        self.source_topics = set(cfg.get("source_topics") or DEFAULT_SOURCE_TOPICS)
+        topics = cfg.get("source_topics") or DEFAULT_SOURCE_TOPICS
+        if isinstance(topics, str):
+            topics = [t.strip() for t in topics.split(",") if t.strip()]
+        self.source_topics = set(topics)
+        self.topics_seen = {}    # topic -> number of messages (for discovery)
         self.suppress_basic = bool(cfg.get("suppress_basic_motion", True))
         self.advertise_host = advertise_host
         self.trace = bool(cfg.get("trace", False))
@@ -130,6 +134,10 @@ class Camera:
             if not tm:
                 return block
             topic = tm.group("t").strip()
+            if topic not in self.topics_seen:
+                LOG.info("%s: camera sends event topic %s (data: %s)", self.name, topic,
+                         ", ".join(f"{k}={v}" for k, v in simple_items(block).items()))
+            self.topics_seen[topic] = self.topics_seen.get(topic, 0) + 1
             if topic in self.source_topics:
                 return self._translate_block(block, wsnt, topic)
             if self.suppress_basic and topic in BASIC_MOTION_TOPICS:
@@ -142,9 +150,9 @@ class Camera:
 
     def _translate_block(self, block, wsnt, topic):
         items = simple_items(block)
-        rule = items.get("Rule", topic)
+        rule = f"{topic.rsplit('/', 1)[-1]}:{items.get('Rule', '-')}"
         value = None
-        for key in ("IsMotion", "State", "IsInside", "IsCrossed"):
+        for key in ("IsMotion", "State", "IsInside", "IsCrossed", "IsPeople", "IsVehicle"):
             if key in items:
                 value = items[key]
                 break
@@ -282,7 +290,9 @@ def make_handler(cam):
             if self.path.startswith("/__notify/"):
                 return self._push_in(body)
             if self.path == "/__status" and self.command == "GET":
-                data = json.dumps({"camera": cam.name, "rules": cam.rules, **cam.stats},
+                data = json.dumps({"camera": cam.name, "rules": cam.rules, **cam.stats,
+                                   "source_topics": sorted(cam.source_topics),
+                                   "topics_seen": cam.topics_seen},
                                   indent=2).encode()
                 return self._send(200, "OK", [("Content-Type", "application/json")], data)
 

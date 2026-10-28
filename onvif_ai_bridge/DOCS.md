@@ -26,7 +26,11 @@ cameras:
     port: 80              # camera ONVIF/HTTP port
     listen_port: 8201     # one of 8201-8208
     suppress_basic_motion: true
+    # source_topics: "tns1:RuleEngine/MyRuleDetector/PeopleDetect, tns1:RuleEngine/MyRuleDetector/VehicleDetect"  # e.g. Reolink
 ```
+
+Default `source_topics` is `tns1:RuleEngine/MotionDetector/Motion` (Milesight Advanced Motion Detection).
+The add-on log and `/__status` list every topic a camera sends, which helps finding the right one for other brands.
 
 In the NVR, add the camera manually as ONVIF with the Home Assistant IP and the
 `listen_port`, and the camera's normal ONVIF username/password.
