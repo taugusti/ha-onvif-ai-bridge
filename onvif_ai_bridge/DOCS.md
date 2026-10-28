@@ -36,3 +36,7 @@ In the NVR, add the camera manually as ONVIF with the Home Assistant IP and the
 `listen_port`, and the camera's normal ONVIF username/password.
 
 Status per camera: `http://<HA-IP>:<listen_port>/__status`
+
+## Cameras without AI over ONVIF
+
+Some cameras (e.g. Reolink) only expose AI detections through their own API. If Home Assistant already has them as binary sensors, list them in `ha_entities` (comma separated). Whenever one of them is `on`, the NVR receives a motion event from the bridged camera. Combine with `suppress_basic_motion: true` so the camera's pixel motion is ignored.

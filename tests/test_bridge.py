@@ -242,6 +242,32 @@ class BridgeTest(unittest.TestCase):
         self.assertIn('Name="State" Value="false"', out)
         self.assertIn("tns1:RuleEngine/MyRuleDetector/PeopleDetect", cam.topics_seen)
 
+    def test_ha_entity_injection(self):
+        cam = bridge.Camera({"host": "10.99.98.239", "listen_port": 8205, "port": 8000,
+                             "ha_entities": "binary_sensor.doorbell_person, binary_sensor.doorbell_vehicle",
+                             "suppress_basic_motion": True}, "10.99.98.216")
+        pull = envelope('<tev:PullMessagesResponse><tev:CurrentTime>x</tev:CurrentTime>'
+                        + notif("tns1:VideoSource/MotionAlarm", None, "State", "true")
+                        + '</tev:PullMessagesResponse>')
+        import xml.etree.ElementTree as ET
+        # first pull on a subscription -> Initialized false, camera pixel motion removed
+        out = cam.inject_pull_response("/onvif/Events/Sub1", cam.translate_events(pull))
+        ET.fromstring(out.encode())
+        self.assertIn('PropertyOperation="Initialized"', out)
+        self.assertIn('Name="State" Value="false"', out)
+        # no change -> nothing injected
+        out = cam.inject_pull_response("/onvif/Events/Sub1", cam.translate_events(pull))
+        self.assertNotIn("NotificationMessage", out)
+        # HA person on -> Changed true
+        cam.set_ha_state("binary_sensor.doorbell_person", True)
+        out = cam.inject_pull_response("/onvif/Events/Sub1", cam.translate_events(pull))
+        ET.fromstring(out.encode())
+        self.assertIn('Name="State" Value="true"', out)
+        self.assertIn('PropertyOperation="Changed"', out)
+        cam.set_ha_state("binary_sensor.doorbell_person", False)
+        out = cam.inject_pull_response("/onvif/Events/Sub1", cam.translate_events(pull))
+        self.assertIn('Name="State" Value="false"', out)
+
     def test_port80_url_forms(self):
         cam = bridge.Camera({"host": "10.99.98.125", "listen_port": 8125}, "10.99.98.216")
         s = ("<a>http://10.99.98.125:80/onvif/Events</a><b>http://10.99.98.125/onvif/Media</b>"

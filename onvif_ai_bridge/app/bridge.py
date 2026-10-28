@@ -81,6 +81,11 @@ class Camera:
             topics = [t.strip() for t in topics.split(",") if t.strip()]
         self.source_topics = set(topics)
         self.topics_seen = {}    # topic -> number of messages (for discovery)
+        ents = cfg.get("ha_entities") or []
+        if isinstance(ents, str):
+            ents = [e.strip() for e in ents.split(",") if e.strip()]
+        self.ha_entities = list(ents)
+        self.emitted = {}        # PullPoint path -> last motion state injected
         self.suppress_basic = bool(cfg.get("suppress_basic_motion", True))
         self.advertise_host = advertise_host
         self.trace = bool(cfg.get("trace", False))
@@ -203,6 +208,56 @@ class Camera:
                        ("Rule", "MyCellMotionDetectorRule")],
                       [("IsMotion", v)]))
 
+    # ---- AI from Home Assistant entities -------------------------------
+    def set_ha_state(self, entity_id, state):
+        with self.lock:
+            before = self.aggregate()
+            self.rules[f"ha:{entity_id}"] = state
+            now = self.aggregate()
+            self.stats["motion"] = now
+            if now != before:
+                self.stats["last_ai_change"] = time.strftime("%Y-%m-%dT%H:%M:%SZ ", time.gmtime()) + ("ON" if now else "OFF")
+        if now != before:
+            LOG.info("%s: HA %s=%s -> motion %s", self.name, entity_id, state, "ON" if now else "off")
+
+    def inject_pull_response(self, path, text):
+        """Add synthetic motion messages to a PullMessagesResponse when the HA-driven state changed."""
+        if not self.ha_entities or "PullMessagesResponse" not in text:
+            return text
+        now = self.aggregate()
+        first = path not in self.emitted
+        if not first and self.emitted[path] == now:
+            return text
+        self.emitted[path] = now
+        utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        op = "Initialized" if first else "Changed"
+        v = "true" if now else "false"
+        ns = ('xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2" '
+              'xmlns:tt="http://www.onvif.org/ver10/schema" '
+              'xmlns:tns1="http://www.onvif.org/ver10/topics"')
+        dialect = 'Dialect="http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet"'
+
+        def msg(topic, src, dat):
+            src_x = "".join(f'<tt:SimpleItem Name="{n}" Value="{val}"/>' for n, val in src)
+            dat_x = "".join(f'<tt:SimpleItem Name="{n}" Value="{val}"/>' for n, val in dat)
+            return (f'<wsnt:NotificationMessage {ns}><wsnt:Topic {dialect}>{topic}</wsnt:Topic>'
+                    f'<wsnt:Message><tt:Message UtcTime="{utc}" PropertyOperation="{op}">'
+                    f'<tt:Source>{src_x}</tt:Source><tt:Data>{dat_x}</tt:Data>'
+                    f'</tt:Message></wsnt:Message></wsnt:NotificationMessage>')
+
+        extra = (msg("tns1:VideoSource/MotionAlarm", [("Source", "000")], [("State", v)])
+                 + msg("tns1:RuleEngine/CellMotionDetector/Motion",
+                       [("VideoSourceConfigurationToken", "000"),
+                        ("VideoAnalyticsConfigurationToken", "000"),
+                        ("Rule", "MyMotionDetectorRule")],
+                       [("IsMotion", v)]))
+        m = re.search(r"</(?:[\w.-]+:)?PullMessagesResponse>", text)
+        if not m:
+            return text
+        self.stats["translated"] += 1
+        LOG.debug("%s: injected HA motion %s into %s (%s)", self.name, v, path, op)
+        return text[:m.start()] + extra + text[m.start():]
+
     # ---- push subscriptions --------------------------------------------
     def rewrite_subscribe_request(self, body):
         """Point a Basic-Notification Subscribe at the bridge instead of the NVR."""
@@ -324,6 +379,7 @@ def make_handler(cam):
                 text = data.decode("utf-8", "replace")
                 text = cam.rewrite_urls(text)
                 text = cam.translate_events(text)
+                text = cam.inject_pull_response(self.path, text)
                 data = text.encode("utf-8")
             if LOG.isEnabledFor(logging.DEBUG):
                 req_op = soap_op(text_req) if text_req else "-"
@@ -413,6 +469,41 @@ def start_tcp_relay(cam):
     return srv
 
 
+def start_ha_poller(cameras, interval=1.0):
+    """Poll Home Assistant entity states through the Supervisor API."""
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    watched = [(cam, e) for cam in cameras for e in cam.ha_entities]
+    if not watched:
+        return
+    if not token:
+        LOG.error("ha_entities configured but no SUPERVISOR_TOKEN (homeassistant_api missing?)")
+        return
+
+    def loop():
+        last_err = None
+        while True:
+            for cam, eid in watched:
+                try:
+                    conn = http.client.HTTPConnection("supervisor", 80, timeout=5)
+                    conn.request("GET", f"/core/api/states/{eid}",
+                                 headers={"Authorization": f"Bearer {token}"})
+                    resp = conn.getresponse()
+                    data = json.loads(resp.read() or b"{}")
+                    conn.close()
+                    if resp.status != 200:
+                        raise RuntimeError(f"HTTP {resp.status}")
+                    cam.set_ha_state(eid, str(data.get("state")).lower() == "on")
+                    last_err = None
+                except Exception as exc:
+                    if str(exc) != last_err:
+                        LOG.warning("%s: cannot read %s from Home Assistant: %s", cam.name, eid, exc)
+                        last_err = str(exc)
+            time.sleep(interval)
+
+    threading.Thread(target=loop, name="ha-poller", daemon=True).start()
+    LOG.info("Polling Home Assistant entities: %s", ", ".join(e for _, e in watched))
+
+
 def load_config(path):
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
@@ -456,6 +547,7 @@ def serve(config):
         LOG.info("Bridge '%s': http://%s:%d -> camera %s:%d (AI topics: %s, suppress basic motion: %s)",
                  cam.name, advertise, cam.listen_port, cam.host, cam.port,
                  ", ".join(sorted(cam.source_topics)), cam.suppress_basic)
+    start_ha_poller([cam for cam, _ in servers])
     return servers
 
 

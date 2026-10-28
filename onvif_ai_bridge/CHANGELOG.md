@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.4.0
+- `ha_entities` per camera (comma separated binary_sensors): for cameras that do not send AI over ONVIF (e.g. Reolink doorbell), Home Assistant sensors such as `binary_sensor.doorbell_person` drive the motion event that the NVR sees. Injected into PullPoint responses.
+
 ## 0.3.1
 - `trace_chars` option to log longer response bodies (e.g. GetEventProperties).
 - Only real motion changes are logged at info; re-subscription states go to debug.
