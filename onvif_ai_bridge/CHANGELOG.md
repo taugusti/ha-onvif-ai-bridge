@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+- `trace_chars` option to log longer response bodies (e.g. GetEventProperties).
+- Only real motion changes are logged at info; re-subscription states go to debug.
+
 ## 0.3.0
 - `source_topics` per camera (comma separated), e.g. Reolink `tns1:RuleEngine/MyRuleDetector/PeopleDetect, tns1:RuleEngine/MyRuleDetector/VehicleDetect`.
 - Topic discovery: every new event topic a camera sends is logged once and listed under `topics_seen` in `/__status`.

@@ -174,9 +174,12 @@ class Camera:
             self.stats["motion"] = now
             if now != before:
                 self.stats["last_ai_change"] = f"{utc} {'ON' if now else 'OFF'}"
-        if now != before or op != "Changed":
+        if now != before:
             LOG.info("%s: AI %s %s=%s -> motion %s (%s)", self.name, topic, rule,
                      state, "ON" if now else "off", op)
+        else:
+            LOG.debug("%s: AI %s %s=%s (motion %s, %s)", self.name, topic, rule,
+                      state, "ON" if now else "off", op)
         v = "true" if now else "false"
         dialect = 'Dialect="http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet"'
 
