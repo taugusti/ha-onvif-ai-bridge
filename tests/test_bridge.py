@@ -268,6 +268,31 @@ class BridgeTest(unittest.TestCase):
         out = cam.inject_pull_response("/onvif/Events/Sub1", cam.translate_events(pull))
         self.assertIn('Name="State" Value="false"', out)
 
+    def test_pullpoint_lifetime_rewrite(self):
+        import xml.etree.ElementTree as ET
+        cam = bridge.Camera({"host": "10.99.98.125", "listen_port": 8201}, "10.99.98.216")
+        hdr = ('<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
+               'xmlns:tev="http://www.onvif.org/ver10/events/wsdl" '
+               'xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">'
+               '<s:Header><wsse:Security><wsse:UsernameToken><wsse:Username>admin</wsse:Username>'
+               '</wsse:UsernameToken></wsse:Security></s:Header><s:Body>')
+        end = '</s:Body></s:Envelope>'
+        # existing value replaced
+        a = cam.rewrite_pullpoint_request(hdr + '<tev:CreatePullPointSubscription><tev:InitialTerminationTime>PT10S</tev:InitialTerminationTime></tev:CreatePullPointSubscription>' + end)
+        self.assertIn(">PT300S<", a); self.assertNotIn("PT10S", a); ET.fromstring(a)
+        # missing element inserted (self-closing form)
+        b = cam.rewrite_pullpoint_request(hdr + '<tev:CreatePullPointSubscription/>' + end)
+        self.assertIn("<tev:InitialTerminationTime>PT300S</tev:InitialTerminationTime>", b); ET.fromstring(b)
+        # missing element inserted after Filter
+        c = cam.rewrite_pullpoint_request(hdr + '<tev:CreatePullPointSubscription><tev:Filter><x/></tev:Filter></tev:CreatePullPointSubscription>' + end)
+        self.assertIn("</tev:Filter><tev:InitialTerminationTime>PT300S", c); ET.fromstring(c)
+        # Renew built from a PullMessages request carries the Security header and parses
+        r = cam.build_renew(hdr + '<tev:PullMessages><tev:Timeout>PT1S</tev:Timeout></tev:PullMessages>' + end)
+        root = ET.fromstring(r.encode())
+        self.assertIn("wsse:UsernameToken", r)
+        self.assertIn("PT300S", r)
+        self.assertTrue(root.tag.endswith("Envelope"))
+
     def test_port80_url_forms(self):
         cam = bridge.Camera({"host": "10.99.98.125", "listen_port": 8125}, "10.99.98.216")
         s = ("<a>http://10.99.98.125:80/onvif/Events</a><b>http://10.99.98.125/onvif/Media</b>"

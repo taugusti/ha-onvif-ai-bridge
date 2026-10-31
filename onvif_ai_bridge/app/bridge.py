@@ -95,6 +95,11 @@ class Camera:
         self.rtsp_port = int(cfg.get("rtsp_port", 554))
         self.rtsp_listen_port = int(cfg.get("rtsp_listen_port") or (self.listen_port + 1000))
         self.relay_rtsp = bool(cfg.get("relay_rtsp", True))
+        # PullPoint lifetime: Milesight grants only 10 s and Ajax never renews,
+        # which leaves the NVR blind ~10 s of every ~22 s.
+        self.subscription_seconds = int(cfg.get("subscription_seconds", 300))
+        self.renew_interval = int(cfg.get("renew_interval", 60))
+        self.last_renew = {}     # PullPoint path -> monotonic time of last Renew
         self.rules = {}          # rule name -> bool
         self.lock = threading.Lock()
         self.push_targets = {}   # token -> original consumer URL
@@ -258,6 +263,46 @@ class Camera:
         LOG.debug("%s: injected HA motion %s into %s (%s)", self.name, v, path, op)
         return text[:m.start()] + extra + text[m.start():]
 
+    # ---- PullPoint lifetime ---------------------------------------------
+    def rewrite_pullpoint_request(self, body):
+        """Ask the camera for a longer InitialTerminationTime than the NVR requested."""
+        if "CreatePullPointSubscription" not in body or self.subscription_seconds <= 0:
+            return body
+        want = f"PT{self.subscription_seconds}S"
+        itt = re.compile(r"(<(?P<p>[\w.-]+:)?InitialTerminationTime\b[^>]*>)\s*[^<]*(</(?P=p)?InitialTerminationTime>)")
+        if itt.search(body):
+            return itt.sub(lambda m: f"{m.group(1)}{want}{m.group(3)}", body, count=1)
+        m = re.search(r"<(?P<p>[\w.-]+:)?CreatePullPointSubscription\b[^>]*?(/?)>", body)
+        if not m:
+            return body
+        prefix = m.group("p") or ""
+        if m.group(2) == "/":          # <CreatePullPointSubscription/>
+            open_tag = m.group(0)[:-2] + ">"
+            new = (f"{open_tag}<{prefix}InitialTerminationTime>{want}</{prefix}InitialTerminationTime>"
+                   f"</{prefix}CreatePullPointSubscription>")
+            return body[:m.start()] + new + body[m.end():]
+        # after an optional Filter element, else right after the opening tag
+        f = re.search(rf"</{re.escape(prefix)}Filter>|</(?:[\w.-]+:)?Filter>", body[m.end():])
+        pos = m.end() + f.end() if f else m.end()
+        el = f"<{prefix}InitialTerminationTime>{want}</{prefix}InitialTerminationTime>"
+        return body[:pos] + el + body[pos:]
+
+    def build_renew(self, pull_request):
+        """Renew request reusing the NVR's own WS-Security header from a PullMessages call."""
+        env = re.search(r"<(?P<p>[\w.-]+:)?Envelope\b[^>]*>", pull_request)
+        sec = re.search(r"<(?P<p>[\w.-]+:)?Security\b.*?</(?P=p)?Security>", pull_request, re.S)
+        if not env:
+            return None
+        decls = " ".join(d for d in re.findall(r'xmlns(?::[\w.-]+)?="[^"]*"', env.group(0))
+                         if not d.startswith(('xmlns:s=', 'xmlns:rnwsnt=', 'xmlns=')))
+        header = sec.group(0) if sec else ""
+        return ('<?xml version="1.0" encoding="UTF-8"?>'
+                f'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" {decls} '
+                'xmlns:rnwsnt="http://docs.oasis-open.org/wsn/b-2">'
+                f'<s:Header>{header}</s:Header><s:Body><rnwsnt:Renew>'
+                f'<rnwsnt:TerminationTime>PT{self.subscription_seconds}S</rnwsnt:TerminationTime>'
+                '</rnwsnt:Renew></s:Body></s:Envelope>')
+
     # ---- push subscriptions --------------------------------------------
     def rewrite_subscribe_request(self, body):
         """Point a Basic-Notification Subscribe at the bridge instead of the NVR."""
@@ -358,6 +403,7 @@ def make_handler(cam):
             if body and is_xml(body, self.headers.get("Content-Type")):
                 text_req = body.decode("utf-8", "replace")
                 text_req = cam.rewrite_subscribe_request(text_req)
+                text_req = cam.rewrite_pullpoint_request(text_req)
                 body = text_req.encode("utf-8")
 
             headers = {k: v for k, v in self.headers.items() if k.lower() not in SKIP_REQ_HEADERS}
@@ -381,6 +427,9 @@ def make_handler(cam):
                 text = cam.translate_events(text)
                 text = cam.inject_pull_response(self.path, text)
                 data = text.encode("utf-8")
+            if (status == 200 and text_req and "PullMessages" in text_req
+                    and cam.subscription_seconds > 0 and cam.renew_interval > 0):
+                self._maybe_renew(text_req, dict(headers))
             if LOG.isEnabledFor(logging.DEBUG):
                 req_op = soap_op(text_req) if text_req else "-"
                 resp_op = soap_op(text) if text else "-"
@@ -390,6 +439,39 @@ def make_handler(cam):
                     LOG.debug("%s: response body %s: %s", cam.name, req_op,
                               compact(text)[:cam.trace_chars])
             self._send(status, reason, rheaders, data)
+
+        def _maybe_renew(self, pull_req, headers):
+            now = time.monotonic()
+            last = cam.last_renew.get(self.path)
+            if last is None:
+                cam.last_renew[self.path] = now      # just created: lifetime already extended
+                return
+            if now - last < cam.renew_interval:
+                return
+            cam.last_renew[self.path] = now
+            renew = cam.build_renew(pull_req)
+            if not renew:
+                return
+            path = self.path
+            body = renew.encode("utf-8")
+            headers["Content-Length"] = str(len(body))
+            headers["Content-Type"] = "application/soap+xml; charset=utf-8"
+
+            def run():
+                try:
+                    st, _, _, data = forward(cam.host, cam.port, "POST", path, headers, body, 15)
+                    cam.stats["renewals"] = cam.stats.get("renewals", 0) + (1 if st == 200 else 0)
+                    if st == 200:
+                        LOG.debug("%s: renewed %s for %ss", cam.name, path, cam.subscription_seconds)
+                    else:
+                        cam.stats["renew_failures"] = cam.stats.get("renew_failures", 0) + 1
+                        LOG.info("%s: Renew of %s refused (HTTP %s): %s", cam.name, path, st,
+                                 compact(data.decode("utf-8", "replace"))[:300])
+                except Exception as exc:
+                    cam.stats["renew_failures"] = cam.stats.get("renew_failures", 0) + 1
+                    LOG.info("%s: Renew of %s failed: %s", cam.name, path, exc)
+
+            threading.Thread(target=run, daemon=True).start()
 
         def _push_in(self, body):
             """Camera pushes a Notify to the bridge; translate and relay to the NVR."""

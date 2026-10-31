@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.5.0
+- Fix missed events: Milesight grants PullPoint subscriptions only 10 s and Ajax never renews them, leaving the NVR blind ~10 s of every ~22 s. The bridge now requests a longer `InitialTerminationTime` (`subscription_seconds`, default 300) and renews active subscriptions in the background every `renew_interval` seconds (default 60), reusing the NVR's own credentials.
+
 ## 0.4.0
 - `ha_entities` per camera (comma separated binary_sensors): for cameras that do not send AI over ONVIF (e.g. Reolink doorbell), Home Assistant sensors such as `binary_sensor.doorbell_person` drive the motion event that the NVR sees. Injected into PullPoint responses.
 
