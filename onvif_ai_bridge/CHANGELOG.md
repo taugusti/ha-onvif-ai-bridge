@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.5.1
+- Renew carries WS-Addressing Action/To/MessageID; refused renewals log the fault reason.
+
 ## 0.5.0
 - Fix missed events: Milesight grants PullPoint subscriptions only 10 s and Ajax never renews them, leaving the NVR blind ~10 s of every ~22 s. The bridge now requests a longer `InitialTerminationTime` (`subscription_seconds`, default 300) and renews active subscriptions in the background every `renew_interval` seconds (default 60), reusing the NVR's own credentials.
 

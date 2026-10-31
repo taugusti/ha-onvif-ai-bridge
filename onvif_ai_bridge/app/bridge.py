@@ -287,7 +287,7 @@ class Camera:
         el = f"<{prefix}InitialTerminationTime>{want}</{prefix}InitialTerminationTime>"
         return body[:pos] + el + body[pos:]
 
-    def build_renew(self, pull_request):
+    def build_renew(self, pull_request, path="/"):
         """Renew request reusing the NVR's own WS-Security header from a PullMessages call."""
         env = re.search(r"<(?P<p>[\w.-]+:)?Envelope\b[^>]*>", pull_request)
         sec = re.search(r"<(?P<p>[\w.-]+:)?Security\b.*?</(?P=p)?Security>", pull_request, re.S)
@@ -296,10 +296,16 @@ class Camera:
         decls = " ".join(d for d in re.findall(r'xmlns(?::[\w.-]+)?="[^"]*"', env.group(0))
                          if not d.startswith(('xmlns:s=', 'xmlns:rnwsnt=', 'xmlns=')))
         header = sec.group(0) if sec else ""
+        to = f"http://{self.host}{'' if self.port == 80 else f':{self.port}'}{path}"
+        addressing = ('<rnwsa:Action s:mustUnderstand="1">'
+                      'http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest</rnwsa:Action>'
+                      f'<rnwsa:MessageID>urn:uuid:{uuid.uuid4()}</rnwsa:MessageID>'
+                      f'<rnwsa:To s:mustUnderstand="1">{to}</rnwsa:To>')
         return ('<?xml version="1.0" encoding="UTF-8"?>'
                 f'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" {decls} '
-                'xmlns:rnwsnt="http://docs.oasis-open.org/wsn/b-2">'
-                f'<s:Header>{header}</s:Header><s:Body><rnwsnt:Renew>'
+                'xmlns:rnwsnt="http://docs.oasis-open.org/wsn/b-2" '
+                'xmlns:rnwsa="http://www.w3.org/2005/08/addressing">'
+                f'<s:Header>{addressing}{header}</s:Header><s:Body><rnwsnt:Renew>'
                 f'<rnwsnt:TerminationTime>PT{self.subscription_seconds}S</rnwsnt:TerminationTime>'
                 '</rnwsnt:Renew></s:Body></s:Envelope>')
 
@@ -449,7 +455,7 @@ def make_handler(cam):
             if now - last < cam.renew_interval:
                 return
             cam.last_renew[self.path] = now
-            renew = cam.build_renew(pull_req)
+            renew = cam.build_renew(pull_req, self.path)
             if not renew:
                 return
             path = self.path
@@ -465,8 +471,11 @@ def make_handler(cam):
                         LOG.debug("%s: renewed %s for %ss", cam.name, path, cam.subscription_seconds)
                     else:
                         cam.stats["renew_failures"] = cam.stats.get("renew_failures", 0) + 1
+                        txt = data.decode("utf-8", "replace")
+                        reason = " | ".join(t.strip() for t in re.findall(
+                            r"<(?:[\w.-]+:)?(?:Text|Value|Subcode)\b[^>]*>([^<]+)<", txt) if t.strip())
                         LOG.info("%s: Renew of %s refused (HTTP %s): %s", cam.name, path, st,
-                                 compact(data.decode("utf-8", "replace"))[:300])
+                                 reason or compact(txt)[:300])
                 except Exception as exc:
                     cam.stats["renew_failures"] = cam.stats.get("renew_failures", 0) + 1
                     LOG.info("%s: Renew of %s failed: %s", cam.name, path, exc)
