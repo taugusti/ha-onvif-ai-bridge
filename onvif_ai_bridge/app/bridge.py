@@ -18,6 +18,8 @@ Both PullPoint (PullMessages) and push (Basic Notification / Subscribe)
 event delivery are supported. Standard library only.
 """
 
+import base64
+import hashlib
 import http.client
 import json
 import logging
@@ -100,6 +102,10 @@ class Camera:
         self.subscription_seconds = int(cfg.get("subscription_seconds", 300))
         self.renew_interval = int(cfg.get("renew_interval", 60))
         self.last_renew = {}     # PullPoint path -> monotonic time of last Renew
+        # Optional own credentials: used to sign Renew requests itself instead of
+        # reusing the NVR's WS-Security header (some cameras reject the reuse).
+        self.username = (cfg.get("username") or "").strip()
+        self.password = cfg.get("password") or ""
         self.rules = {}          # rule name -> bool
         self.lock = threading.Lock()
         self.push_targets = {}   # token -> original consumer URL
@@ -287,6 +293,24 @@ class Camera:
         el = f"<{prefix}InitialTerminationTime>{want}</{prefix}InitialTerminationTime>"
         return body[:pos] + el + body[pos:]
 
+    def ws_security(self):
+        """Fresh WS-Security UsernameToken (PasswordDigest) with the bridge's own credentials."""
+        nonce = os.urandom(16)
+        created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        digest = base64.b64encode(hashlib.sha1(nonce + created.encode() + self.password.encode()).digest()).decode()
+        wsse = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"
+        wsu = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"
+        ptype = ("http://docs.oasis-open.org/wss/2004/01/"
+                 "oasis-200401-wss-username-token-profile-1.0#PasswordDigest")
+        etype = ("http://docs.oasis-open.org/wss/2004/01/"
+                 "oasis-200401-wss-soap-message-security-1.0#Base64Binary")
+        user = (self.username.replace("&", "&amp;").replace("<", "&lt;"))
+        return (f'<wsse:Security s:mustUnderstand="1" xmlns:wsse="{wsse}" xmlns:wsu="{wsu}">'
+                f'<wsse:UsernameToken><wsse:Username>{user}</wsse:Username>'
+                f'<wsse:Password Type="{ptype}">{digest}</wsse:Password>'
+                f'<wsse:Nonce EncodingType="{etype}">{base64.b64encode(nonce).decode()}</wsse:Nonce>'
+                f'<wsu:Created>{created}</wsu:Created></wsse:UsernameToken></wsse:Security>')
+
     def build_renew(self, pull_request, path="/"):
         """Renew request reusing the NVR's own WS-Security header from a PullMessages call."""
         env = re.search(r"<(?P<p>[\w.-]+:)?Envelope\b[^>]*>", pull_request)
@@ -295,8 +319,11 @@ class Camera:
             return None
         decls = " ".join(d for d in re.findall(r'xmlns(?::[\w.-]+)?="[^"]*"', env.group(0))
                          if not d.startswith(('xmlns:s=', 'xmlns:rnwsnt=', 'xmlns=')))
-        header = sec.group(0) if sec else ""
-        to = f"http://{self.host}{'' if self.port == 80 else f':{self.port}'}{path}"
+        if self.username and self.password:
+            header = self.ws_security()
+        else:
+            header = sec.group(0) if sec else ""
+        to =f"http://{self.host}{'' if self.port == 80 else f':{self.port}'}{path}"
         addressing = ('<rnwsa:Action s:mustUnderstand="1">'
                       'http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest</rnwsa:Action>'
                       f'<rnwsa:MessageID>urn:uuid:{uuid.uuid4()}</rnwsa:MessageID>'

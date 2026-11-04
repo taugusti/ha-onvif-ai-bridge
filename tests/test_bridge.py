@@ -304,5 +304,22 @@ class BridgeTest(unittest.TestCase):
         self.assertIn("http://10.99.98.1250/x", out)
 
 
+
+class OwnCredentialsTest(unittest.TestCase):
+    def test_renew_uses_own_credentials(self):
+        import base64, hashlib, re as _re
+        cam = bridge.Camera({"name": "c", "host": "10.0.0.9", "port": 8000, "listen_port": 8205,
+                             "username": "admin", "password": "secret"}, "10.0.0.2")
+        pull = ('<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Header>'
+                '<wsse:Security xmlns:wsse="x"><wsse:UsernameToken><wsse:Username>nvr</wsse:Username>'
+                '</wsse:UsernameToken></wsse:Security></s:Header><s:Body/></s:Envelope>')
+        xml = cam.build_renew(pull, "/onvif/PullSubManager?Idx=1")
+        assert "<wsse:Username>admin</wsse:Username>" in xml and ">nvr<" not in xml
+        nonce = base64.b64decode(_re.search(r"<wsse:Nonce[^>]*>([^<]+)<", xml).group(1))
+        created = _re.search(r"<wsu:Created>([^<]+)<", xml).group(1)
+        digest = _re.search(r"<wsse:Password[^>]*>([^<]+)<", xml).group(1)
+        assert digest == base64.b64encode(hashlib.sha1(nonce + created.encode() + b"secret").digest()).decode()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

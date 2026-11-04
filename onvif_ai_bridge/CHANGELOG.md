@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.6.0
+- Optional `username`/`password` per camera: Renew requests are signed with the bridge's own fresh WS-Security token instead of reusing the NVR's header (Reolink rejects the reuse with 401).
+
 ## 0.5.1
 - Renew carries WS-Addressing Action/To/MessageID; refused renewals log the fault reason.
 
