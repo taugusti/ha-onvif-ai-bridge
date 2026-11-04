@@ -651,7 +651,7 @@ def serve(config):
     if not advertise:
         raise SystemExit("advertise_host not set and host IP could not be detected")
     servers = []
-    for cfg in config.get("cameras", []):
+    for cfg in apply_shared_credentials(config):
         cam = Camera(cfg, advertise)
         srv = ThreadingHTTPServer(("0.0.0.0", cam.listen_port), make_handler(cam))
         srv.daemon_threads = True
@@ -662,11 +662,87 @@ def serve(config):
             start_tcp_relay(cam)
             LOG.info("Bridge '%s': RTSP rtsp://%s:%d -> %s:%d", cam.name, advertise,
                      cam.rtsp_listen_port, cam.host, cam.rtsp_port)
-        LOG.info("Bridge '%s': http://%s:%d -> camera %s:%d (AI topics: %s, suppress basic motion: %s)",
+        LOG.info("Bridge '%s': http://%s:%d -> camera %s:%d (AI topics: %s, suppress basic motion: %s, "
+                 "renew signed with own credentials: %s)",
                  cam.name, advertise, cam.listen_port, cam.host, cam.port,
-                 ", ".join(sorted(cam.source_topics)), cam.suppress_basic)
+                 ", ".join(sorted(cam.source_topics)), cam.suppress_basic,
+                 "yes" if (cam.username and cam.password) else "no")
     start_ha_poller([cam for cam, _ in servers])
+    start_media_cleanup(config.get("media_cleanup") or "")
     return servers
+
+
+def apply_shared_credentials(config):
+    """Top-level renew_username/renew_password for the cameras named in renew_credentials_for.
+
+    A camera's own username/password wins. Top-level fields exist because the nested
+    camera form in the HA UI is awkward for passwords.
+    """
+    user = (config.get("renew_username") or "").strip()
+    pw = config.get("renew_password") or ""
+    names = {n.strip().lower() for n in (config.get("renew_credentials_for") or "").split(",") if n.strip()}
+    out = []
+    for cfg in config.get("cameras", []):
+        cfg = dict(cfg)
+        if user and pw and (cfg.get("name") or "").strip().lower() in names \
+                and not (cfg.get("username") and cfg.get("password")):
+            cfg["username"], cfg["password"] = user, pw
+        out.append(cfg)
+    return out
+
+
+def parse_cleanup(spec):
+    """'nummerplader:30, other:7' -> [('/media/nummerplader', 30), ...] (only below /media)."""
+    rules = []
+    for part in str(spec).split(","):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        name, days = part.rsplit(":", 1)
+        name = name.strip().strip("/")
+        if not name or ".." in name.split("/"):
+            continue
+        try:
+            rules.append((os.path.join("/media", name), max(1, int(days))))
+        except ValueError:
+            continue
+    return rules
+
+
+def cleanup_once(rules, now=None):
+    now = now or time.time()
+    removed = 0
+    for folder, days in rules:
+        limit = now - days * 86400
+        try:
+            entries = os.listdir(folder)
+        except OSError:
+            continue
+        for fn in entries:
+            p = os.path.join(folder, fn)
+            try:
+                if os.path.isfile(p) and os.path.getmtime(p) < limit:
+                    os.remove(p)
+                    removed += 1
+            except OSError as exc:
+                LOG.debug("cleanup: could not remove %s: %s", p, exc)
+    return removed
+
+
+def start_media_cleanup(spec, interval=3600):
+    rules = parse_cleanup(spec)
+    if not rules:
+        return
+    LOG.info("Media cleanup: %s", ", ".join(f"{f} > {d} days" for f, d in rules))
+
+    def loop():
+        while True:
+            n = cleanup_once(rules)
+            if n:
+                LOG.info("Media cleanup: removed %d old file(s)", n)
+            time.sleep(interval)
+
+    threading.Thread(target=loop, name="media-cleanup", daemon=True).start()
 
 
 def main():

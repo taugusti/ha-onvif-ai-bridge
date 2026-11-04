@@ -321,5 +321,33 @@ class OwnCredentialsTest(unittest.TestCase):
         assert digest == base64.b64encode(hashlib.sha1(nonce + created.encode() + b"secret").digest()).decode()
 
 
+class MediaCleanupTest(unittest.TestCase):
+    def test_parse_and_cleanup(self):
+        import tempfile
+        rules = bridge.parse_cleanup("nummerplader:30, ../etc:1, bad, x:y")
+        self.assertEqual(rules, [("/media/nummerplader", 30)])
+        d = tempfile.mkdtemp()
+        old = os.path.join(d, "old.jpg")
+        new = os.path.join(d, "new.jpg")
+        for p in (old, new):
+            open(p, "w").close()
+        os.utime(old, (time.time() - 31 * 86400,) * 2)
+        self.assertEqual(bridge.cleanup_once([(d, 30)]), 1)
+        self.assertFalse(os.path.exists(old))
+        self.assertTrue(os.path.exists(new))
+
+
+class SharedCredentialsTest(unittest.TestCase):
+    def test_only_named_cameras_get_shared_credentials(self):
+        cfg = {"renew_username": "admin", "renew_password": "pw", "renew_credentials_for": " doorbell ai ",
+               "cameras": [{"name": "Doorbell AI"}, {"name": "Gårdhave AI"},
+                           {"name": "Doorbell AI", "username": "own", "password": "x"}]}
+        out = bridge.apply_shared_credentials(cfg)
+        self.assertEqual((out[0]["username"], out[0]["password"]), ("admin", "pw"))
+        self.assertNotIn("username", out[1])
+        self.assertEqual(out[2]["username"], "own")
+        self.assertNotIn("username", cfg["cameras"][0])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
