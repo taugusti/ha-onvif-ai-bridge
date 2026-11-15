@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.1
+- Top-level `ha_entities_override` (`Camera name=entity1,entity2; Other=...`) replaces a camera's `ha_entities` without editing the camera list.
+
 ## 0.7.0
 - `media_cleanup` option (e.g. `nummerplader:30`): deletes files older than N days in folders under /media (checked hourly). Used for licence-plate snapshots.
 - Top-level `renew_username` / `renew_password` / `renew_credentials_for` (camera names, comma separated) as an alternative to per-camera credentials. Startup log shows per camera whether renewals are signed with own credentials.

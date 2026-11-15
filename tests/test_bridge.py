@@ -348,6 +348,16 @@ class SharedCredentialsTest(unittest.TestCase):
         self.assertEqual(out[2]["username"], "own")
         self.assertNotIn("username", cfg["cameras"][0])
 
+    def test_ha_entities_override(self):
+        cfg = {"ha_entities_override": "indkørsel ai = input_boolean.x, input_boolean.y ; Gårdhave AI=",
+               "cameras": [{"name": "Indkørsel AI", "ha_entities": "binary_sensor.pir"},
+                           {"name": "Gårdhave AI", "ha_entities": "a"}, {"name": "Doorbell AI", "ha_entities": "b"}]}
+        out = bridge.apply_shared_credentials(cfg)
+        self.assertEqual(out[0]["ha_entities"], "input_boolean.x, input_boolean.y")
+        self.assertEqual(out[1]["ha_entities"], "")
+        self.assertEqual(out[2]["ha_entities"], "b")
+        self.assertEqual(cfg["cameras"][0]["ha_entities"], "binary_sensor.pir")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

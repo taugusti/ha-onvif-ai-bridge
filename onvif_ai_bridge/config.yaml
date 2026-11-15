@@ -1,5 +1,5 @@
 name: ONVIF AI Bridge
-version: "0.7.0"
+version: "0.7.1"
 slug: onvif_ai_bridge
 description: Turns camera AI detections (e.g. Milesight human/vehicle) into plain ONVIF motion events for NVRs such as Ajax
 url: https://github.com/taugusti/ha-onvif-ai-bridge
@@ -56,6 +56,7 @@ schema:
   advertise_host: str?
   log_level: list(debug|info|warning)
   media_cleanup: str?
+  ha_entities_override: str?
   renew_credentials_for: str?
   renew_username: str?
   renew_password: password?

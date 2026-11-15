@@ -688,7 +688,28 @@ def apply_shared_credentials(config):
                 and not (cfg.get("username") and cfg.get("password")):
             cfg["username"], cfg["password"] = user, pw
         out.append(cfg)
-    return out
+    return apply_ha_entities_override(config, out)
+
+
+def apply_ha_entities_override(config, cameras):
+    """Top-level ha_entities_override: 'Camera name=entity1,entity2; Other=entity3'.
+
+    Replaces a camera's ha_entities without editing the camera list (which would mean
+    re-submitting its stored password). An empty right-hand side clears ha_entities.
+    """
+    spec = config.get("ha_entities_override") or ""
+    overrides = {}
+    for part in spec.split(";"):
+        if "=" not in part:
+            continue
+        name, ents = part.split("=", 1)
+        if name.strip():
+            overrides[name.strip().lower()] = ents.strip()
+    for cfg in cameras:
+        key = (cfg.get("name") or "").strip().lower()
+        if key in overrides:
+            cfg["ha_entities"] = overrides[key]
+    return cameras
 
 
 def parse_cleanup(spec):
